@@ -305,8 +305,18 @@ export async function runOcr(
 
   onProgress?.(91, "Analyzing layout & sections...");
 
-  const rawText = result.data.text;
-  const ocrWords = result.data.words ?? [];
+  // Tesseract.js types are loose across versions; cast to any for cross-version fields.
+  const data = result.data as unknown as {
+    text: string;
+    confidence?: number;
+    words?: Array<{ text?: string; confidence: number }>;
+    blocks?: Array<{ text: string; confidence: number; bbox: BBox }>;
+    paragraphs?: Array<{ text: string; confidence: number; bbox: BBox }>;
+    lines?: Array<{ text: string; confidence: number; bbox: BBox }>;
+  };
+
+  const rawText = data.text;
+  const ocrWords = data.words ?? [];
 
   type TesseractBlock = { text: string; confidence: number; bbox: BBox };
   type BlockItem = { bbox: BBox; confidence: number; lines: string[] };
@@ -320,10 +330,10 @@ export async function runOcr(
       }))
       .filter((b) => b.lines.length > 0);
 
-  let blockData: BlockItem[] = toBlockItems((result.data.blocks ?? []) as TesseractBlock[]);
+  let blockData: BlockItem[] = toBlockItems((data.blocks ?? []) as TesseractBlock[]);
   if (blockData.length === 0)
-    blockData = toBlockItems((result.data.paragraphs ?? []) as TesseractBlock[]);
-  if (blockData.length === 0) blockData = toBlockItems((result.data.lines ?? []) as TesseractBlock[]);
+    blockData = toBlockItems((data.paragraphs ?? []) as TesseractBlock[]);
+  if (blockData.length === 0) blockData = toBlockItems((data.lines ?? []) as TesseractBlock[]);
 
   if (blockData.length === 0 && rawText.trim()) {
     const conf = result.data.confidence ?? 50;
