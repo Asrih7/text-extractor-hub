@@ -336,7 +336,7 @@ export async function runOcr(
   if (blockData.length === 0) blockData = toBlockItems((data.lines ?? []) as TesseractBlock[]);
 
   if (blockData.length === 0 && rawText.trim()) {
-    const conf = result.data.confidence ?? 50;
+    const conf = data.confidence ?? 50;
     const groups = rawText.split(/\n{2,}/).filter((g) => g.trim().length > 0);
     if (groups.length > 1) {
       blockData = groups
