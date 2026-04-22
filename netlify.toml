@@ -1,8 +1,7 @@
 [build]
-  command = "npm run build"  # Replace with your build command or remove if not needed
-  publish = "dist"           # Replace with your output directory (e.g., "public", "build")
+  command = "npm run build"
+  publish = ".netlify"
 
-# Optional: Redirects for SPAs (e.g., React/Vue)
 [[redirects]]
   from = "/*"
   to = "/index.html"
