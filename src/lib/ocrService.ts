@@ -18,7 +18,7 @@ async function preprocessImage(file: File): Promise<Blob> {
     const url = URL.createObjectURL(file);
     img.onload = () => {
       try {
-        const scale = Math.min(4, Math.max(1.5, 2500 / img.width));
+        const scale = Math.min(4, Math.max(2, 2800 / img.width));
         const w = Math.round(img.width * scale);
         const h = Math.round(img.height * scale);
         const canvas = document.createElement("canvas");
@@ -30,11 +30,12 @@ async function preprocessImage(file: File): Promise<Blob> {
         ctx.drawImage(img, 0, 0, w, h);
         const id = ctx.getImageData(0, 0, w, h);
         const d = id.data;
-        const f = (259 * 290) / (255 * 224);
+        // Grayscale + contrast boost — better OCR for UI screenshots
+        const contrast = 1.4;
         for (let i = 0; i < d.length; i += 4) {
-          d[i] = clamp(f * (d[i] - 128) + 128);
-          d[i + 1] = clamp(f * (d[i + 1] - 128) + 128);
-          d[i + 2] = clamp(f * (d[i + 2] - 128) + 128);
+          const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          const c = clamp((g - 128) * contrast + 128);
+          d[i] = d[i + 1] = d[i + 2] = c;
         }
         ctx.putImageData(id, 0, 0);
         URL.revokeObjectURL(url);
@@ -59,53 +60,134 @@ function clamp(v: number) {
   return Math.min(255, Math.max(0, Math.round(v)));
 }
 
-// ─── Text helpers ─────────────────────────────────────────────────────────────
-function toCamelCase(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .trim()
-    .split(/\s+/)
-    .filter((w) => w.length > 0)
-    .map((w, i) => (i === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1)))
-    .join("")
-    .slice(0, 60);
+// ─── OCR text cleanup ─────────────────────────────────────────────────────────
+// Fixes common Tesseract misreads on UI screenshots
+function cleanOcrText(raw: string): string {
+  let t = raw;
+  // Normalize quotes/dashes/whitespace
+  t = t
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\u00A0/g, " ")
+    .replace(/[^\S\n]+/g, " ");
+
+  // Fix vertical bars / pipes that should be I or l
+  t = t.replace(/(?<=[a-zA-Z])\|(?=[a-zA-Z])/g, "l");
+  t = t.replace(/\b\|(?=[a-zA-Z])/g, "I");
+
+  // Normalize bullets
+  t = t.replace(/[\u25CF\u25CB\u25A0\u25A1\u25BA\u25C6\u2756]/g, "•");
+
+  // Fix digit-in-word misreads (only inside alphabetic words)
+  t = t.replace(/\b([A-Za-z]*)([0-9])([A-Za-z]+)\b/g, (_, pre, dig, post) => {
+    const map: Record<string, string> = { "0": "o", "1": "l", "5": "s", "8": "B", "6": "G" };
+    const replacement = map[dig] ?? dig;
+    // Preserve case of preceding char
+    const useUpper = pre.length > 0 ? /[A-Z]/.test(pre[pre.length - 1]) : /[A-Z]/.test(post[0]);
+    return pre + (useUpper ? replacement.toUpperCase() : replacement) + post;
+  });
+
+  // Collapse repeated punctuation
+  t = t.replace(/\.{4,}/g, "...");
+  t = t.replace(/-{3,}/g, "—");
+
+  return t;
 }
 
-function toPascalCase(text: string): string {
+function cleanLine(line: string): string {
+  let t = cleanOcrText(line).trim();
+  // Strip leading/trailing junk punctuation
+  t = t.replace(/^[^\w€$£•\[\(]+/, "").replace(/[\s\\\/|]+$/, "");
+  return t.trim();
+}
+
+// Discard pure noise lines
+function isJunk(line: string): boolean {
+  if (line.length < 2) return true;
+  const letters = (line.match(/[A-Za-z]/g) || []).length;
+  const digits = (line.match(/[0-9]/g) || []).length;
+  const meaningful = letters + digits;
+  if (meaningful === 0) return true;
+  // Ratio of meaningful chars must be reasonable
+  if (meaningful / line.length < 0.4) return true;
+  // Single repeated character
+  if (/^(.)\1+$/.test(line.replace(/\s/g, ""))) return true;
+  return false;
+}
+
+// ─── Key generation ───────────────────────────────────────────────────────────
+const STOP_WORDS = new Set([
+  "a", "an", "the", "and", "or", "but", "of", "in", "on", "at", "to", "for",
+  "with", "by", "from", "is", "are", "was", "were", "be", "been", "being",
+  "have", "has", "had", "do", "does", "did", "will", "would", "could", "should",
+  "may", "might", "can", "this", "that", "these", "those", "it", "its",
+]);
+
+function tokenize(text: string): string[] {
   return text
-    .replace(/[^a-zA-Z0-9\s]/g, "")
-    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
-    .filter((w) => w.length > 0)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .filter((w) => w.length > 0);
+}
+
+function toCamel(words: string[]): string {
+  if (words.length === 0) return "";
+  return words
+    .map((w, i) => (i === 0 ? w.toLowerCase() : w[0].toUpperCase() + w.slice(1).toLowerCase()))
     .join("");
 }
 
-function cleanLines(lines: string[]): string[] {
-  return lines
-    .map((l) => l.trim())
-    .filter((l) => {
-      if (l.length < 2) return false;
-      const alphaNum = l.replace(/[^a-zA-Z0-9€$£%.,!?&():/ \-+@#]/g, "").length;
-      return alphaNum / l.length >= 0.3;
-    });
+function toPascal(words: string[]): string {
+  return words.map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase()).join("");
 }
 
+function semanticKey(text: string, type: TextType, hint?: string): string {
+  const tokens = tokenize(text).filter((t) => !STOP_WORDS.has(t)).slice(0, 4);
+  const significant = tokens.length > 0 ? tokens : tokenize(text).slice(0, 3);
+  const base = toCamel(significant) || "field";
+
+  const suffix: Partial<Record<TextType, string>> = {
+    Label: "Label",
+    Action: "Button",
+    Link: "Link",
+    Boolean: "Toggle",
+    ListOption: "Option",
+    RichText: "Text",
+    Other: "",
+  };
+
+  // Strip suffix-like words already present at the end
+  let keyBase = base;
+  const lower = keyBase.toLowerCase();
+  const sfx = (suffix[type] || "").toLowerCase();
+  if (sfx && lower.endsWith(sfx)) {
+    return keyBase;
+  }
+
+  if (hint) {
+    const hintCamel = hint[0].toLowerCase() + hint.slice(1);
+    keyBase = `${hintCamel}${base[0].toUpperCase()}${base.slice(1)}`;
+  }
+
+  return suffix[type] ? `${keyBase}${suffix[type]}` : keyBase;
+}
+
+// ─── Classification ───────────────────────────────────────────────────────────
 function classifyLine(line: string): TextType {
   const t = line.trim();
   if (!t) return "Other";
-  if (/^https?:\/\//i.test(t) || /^www\./i.test(t) || /\.(com|org|net|io|app|dev)\b/i.test(t))
+  if (/^https?:\/\//i.test(t) || /^www\./i.test(t) || /\.(com|org|net|io|app|dev|co)\b/i.test(t))
     return "Link";
-  if (/^(yes|no|true|false|on|off|enabled|disabled|active|inactive|checked|unchecked)$/i.test(t))
-    return "Boolean";
+  if (/^(yes|no|true|false|on|off|enabled|disabled|active|inactive)$/i.test(t)) return "Boolean";
   if (
-    /^(submit|cancel|save|delete|edit|add|create|update|remove|close|open|confirm|back|next|continue|upload|download|export|import|search|filter|reset|apply|login|logout|sign in|sign out|register|send|approve|reject|done|refresh|clear|go|ok|proceed|get started|try free|subscribe|buy now|learn more|view all|see more|contact us|sign up|log in)$/i.test(
+    /^(submit|cancel|save|delete|edit|add|create|update|remove|close|open|confirm|back|next|continue|upload|download|export|import|search|filter|reset|apply|login|log\s?in|logout|log\s?out|register|send|approve|reject|done|refresh|clear|ok|proceed|get\s?started|try\s?free|subscribe|buy\s?now|learn\s?more|view\s?all|see\s?more|contact\s?us|sign\s?up|sign\s?in)$/i.test(
       t,
     )
   )
     return "Action";
-  if (/^[\u2022\-\*\u25BA\u25CF]\s/.test(t) || /^\d+\.\s/.test(t) || /^\[\s*[\sx]\s*\]/.test(t))
+  if (/^[•\-*►●]\s/.test(t) || /^\d+[.)]\s/.test(t) || /^\[\s*[\sx]\s*\]/.test(t))
     return "ListOption";
   if (t.length > 100 || t.split(/\s+/).length > 15) return "RichText";
   if (t.length <= 50 && !/[.!?]$/.test(t) && t.split(/\s+/).length <= 6) return "Label";
@@ -113,6 +195,7 @@ function classifyLine(line: string): TextType {
   return "Label";
 }
 
+// ─── Layout / section analysis ────────────────────────────────────────────────
 type SectionKind =
   | "Header"
   | "Navigation"
@@ -134,6 +217,7 @@ type BBox = { x0: number; y0: number; x1: number; y1: number };
 interface BlockAnalysis {
   kind: SectionKind;
   label: string;
+  hint: string;
   score: number;
 }
 
@@ -151,94 +235,74 @@ function analyzeBlock(lines: string[], bbox: BBox, imageH: number, imageW: numbe
   const blockW = bbox.x1 - bbox.x0;
   const isWide = blockW / imageW > 0.6;
 
-  if (
-    /©|copyright|\bprivacy policy\b|\bcookies\b|\bterms\b|\ball rights reserved\b|\bgeneral conditions\b/i.test(
-      allText,
-    )
-  ) {
-    return { kind: "Footer", label: "Footer", score: 95 };
-  }
+  if (/©|copyright|privacy policy|cookies?|terms|all rights reserved/i.test(allText))
+    return { kind: "Footer", label: "Footer", hint: "footer", score: 95 };
 
-  if (
-    lines.length <= 3 &&
-    /(.+\s[>/]\s.+){1,}/.test(allText) &&
-    lines.every((l) => l.split(/\s+/).length <= 10)
-  ) {
-    return { kind: "Breadcrumb", label: "Breadcrumb", score: 90 };
-  }
+  if (lines.length <= 3 && /(.+\s[>/]\s.+){1,}/.test(allText))
+    return { kind: "Breadcrumb", label: "Breadcrumb", hint: "breadcrumb", score: 90 };
 
-  if (/(\d+\s*[.)]\s*\w[\w\s]{0,25}){2,}/.test(allText) && lines.length <= 5) {
-    return { kind: "Steps", label: "Steps", score: 88 };
-  }
+  if (/(\d+\s*[.)]\s*\w[\w\s]{0,25}){2,}/.test(allText) && lines.length <= 5)
+    return { kind: "Steps", label: "Steps", hint: "step", score: 88 };
 
-  if (hasPrice(allText)) {
-    return { kind: "PricingCard", label: "PricingCard", score: 92 };
-  }
+  if (hasPrice(allText))
+    return { kind: "PricingCard", label: "PricingCard", hint: "pricing", score: 92 };
 
   const allShortWords = lines.every((l) => l.split(/\s+/).length <= 4);
-  const noLongSentence = !lines.some((l) => l.split(/\s+/).length > 6);
-  if (lines.length >= 3 && allShortWords && noLongSentence && !hasPrice(allText) && isWide) {
-    return { kind: "Navigation", label: "Navigation", score: 80 };
-  }
+  if (lines.length >= 3 && allShortWords && !hasPrice(allText) && isWide)
+    return { kind: "Navigation", label: "Navigation", hint: "nav", score: 80 };
 
-  if (relY < 0.1 && isWide && lines.length <= 3) {
-    return { kind: "Header", label: "Header", score: 78 };
-  }
+  if (relY < 0.1 && isWide && lines.length <= 3)
+    return { kind: "Header", label: "Header", hint: "header", score: 78 };
 
   const actionWords =
     /\b(submit|cancel|save|delete|edit|close|confirm|back|next|continue|apply|reset|login|sign in|sign up|ok|proceed|get started|subscribe|buy|download|export|send|add|create|upload|search)\b/i;
   const actionLineCount = lines.filter(
     (l) => actionWords.test(l) && l.split(/\s+/).length <= 4,
   ).length;
-  if (actionLineCount >= 1 && actionLineCount >= lines.length * 0.6) {
-    return { kind: "ActionBar", label: "ActionBar", score: 85 };
-  }
+  if (actionLineCount >= 1 && actionLineCount >= lines.length * 0.6)
+    return { kind: "ActionBar", label: "ActionBar", hint: "action", score: 85 };
 
   const linkLikeCount = lines.filter(
     (l) => /^https?:\/\//i.test(l) || /\.(com|org|net|io)\b/i.test(l),
   ).length;
-  if (linkLikeCount >= 2 || (linkLikeCount >= 1 && lines.length <= 3)) {
-    return { kind: "LinkSection", label: "LinkSection", score: 82 };
-  }
+  if (linkLikeCount >= 2 || (linkLikeCount >= 1 && lines.length <= 3))
+    return { kind: "LinkSection", label: "LinkSection", hint: "link", score: 82 };
 
   const formLabelCount = lines.filter(
-    (l) => /^[\w\s]{2,30}:?\s*$/.test(l) && l.split(/\s+/).length <= 5,
+    (l) => /^[\w\s]{2,30}:\s*$/.test(l) && l.split(/\s+/).length <= 5,
   ).length;
   const hasInputLike =
     /\b(email|password|name|phone|address|username|search|select|choose|enter|type)\b/i.test(lower);
-  if (formLabelCount >= 2 || (hasInputLike && lines.length >= 2)) {
-    return { kind: "FormSection", label: "FormSection", score: 78 };
-  }
+  if (formLabelCount >= 2 || (hasInputLike && lines.length >= 2))
+    return { kind: "FormSection", label: "FormSection", hint: "form", score: 78 };
 
   const tabularLikeCount = lines.filter((l) => l.split(/\s{2,}|\t/).length >= 3).length;
-  if (tabularLikeCount >= 2) {
-    return { kind: "TableSection", label: "TableSection", score: 80 };
-  }
+  if (tabularLikeCount >= 2)
+    return { kind: "TableSection", label: "TableSection", hint: "table", score: 80 };
 
-  const hasStatLike = /\d+[\d,.]*\s*(%|k|m|gb|tb|ms|s|h|min|users?|items?|files?|records?)/i.test(
+  const hasStat = /\d+[\d,.]*\s*(%|k|m|gb|tb|ms|s|h|min|users?|items?|files?|records?)/i.test(
     allText,
   );
-  if (hasStatLike && lines.length <= 6) {
-    return { kind: "InfoCard", label: "InfoCard", score: 75 };
+  if (hasStat && lines.length <= 6)
+    return { kind: "InfoCard", label: "InfoCard", hint: "info", score: 75 };
+
+  if (lines.length === 1 && lines[0].split(/\s+/).length <= 8 && relY < 0.35) {
+    const heading = lines[0];
+    const tokens = tokenize(heading).filter((t) => !STOP_WORDS.has(t)).slice(0, 3);
+    const label = tokens.length > 0 ? toPascal(tokens) : "PageTitle";
+    return { kind: "PageTitle", label, hint: "title", score: 72 };
   }
 
-  if (
-    lines.length === 1 &&
-    lines[0].split(/\s+/).length <= 8 &&
-    lines[0].length <= 50 &&
-    relY < 0.35
-  ) {
-    const label = toPascalCase(lines[0]) || "PageTitle";
-    return { kind: "PageTitle", label, score: 72 };
-  }
-
-  if (lines.some((l) => l.split(/\s+/).length > 8)) {
-    return { kind: "Description", label: "Description", score: 65 };
-  }
+  if (lines.some((l) => l.split(/\s+/).length > 8))
+    return { kind: "Description", label: "Description", hint: "description", score: 65 };
 
   const heading = lines.find((l) => l.length <= 50 && l.split(/\s+/).length <= 7);
-  const label = heading ? toPascalCase(heading) || "Section" : "Section";
-  return { kind: "Section", label, score: 50 };
+  const tokens = heading
+    ? tokenize(heading).filter((t) => !STOP_WORDS.has(t)).slice(0, 3)
+    : [];
+  const label = tokens.length > 0 ? toPascal(tokens) : "Section";
+  const hint = tokens.length > 0 ? toCamel(tokens) : "section";
+  return { kind: "Section", label, hint, score: 50 };
 }
 
 function deduplicateLabels(sections: Array<{ label: string }>): void {
@@ -262,7 +326,10 @@ function detectComponentName(
       const match = line
         .trim()
         .match(/^(Add|Edit|Create|View|Manage|Detail(?:ed)?|New|Update|Delete|Remove)\s+(.{2,40})$/i);
-      if (match) return toPascalCase(line.trim()) + "Component";
+      if (match) {
+        const tokens = tokenize(line).slice(0, 4);
+        return toPascal(tokens) + "Component";
+      }
     }
   }
   const topBlocks = blocks.filter((b) => (b.bbox.y0 + b.bbox.y1) / 2 / imageH < 0.5);
@@ -270,11 +337,15 @@ function detectComponentName(
     const heading = b.lines.find(
       (l) => l.length >= 3 && l.length <= 45 && l.split(/\s+/).length <= 6 && !/©|\d{4}/.test(l),
     );
-    if (heading) return toPascalCase(heading) + "Component";
+    if (heading) {
+      const tokens = tokenize(heading).filter((t) => !STOP_WORDS.has(t)).slice(0, 4);
+      if (tokens.length > 0) return toPascal(tokens) + "Component";
+    }
   }
   return "UnknownComponent";
 }
 
+// ─── Main pipeline ────────────────────────────────────────────────────────────
 export async function runOcr(
   file: File,
   componentNameOverride?: string,
@@ -305,7 +376,6 @@ export async function runOcr(
 
   onProgress?.(91, "Analyzing layout & sections...");
 
-  // Tesseract.js types are loose across versions; cast to any for cross-version fields.
   const data = result.data as unknown as {
     text: string;
     confidence?: number;
@@ -315,7 +385,7 @@ export async function runOcr(
     lines?: Array<{ text: string; confidence: number; bbox: BBox }>;
   };
 
-  const rawText = data.text;
+  const rawText = cleanOcrText(data.text);
   const ocrWords = data.words ?? [];
 
   type TesseractBlock = { text: string; confidence: number; bbox: BBox };
@@ -326,7 +396,10 @@ export async function runOcr(
       .map((b) => ({
         bbox: b.bbox,
         confidence: b.confidence,
-        lines: cleanLines(b.text.split("\n")),
+        lines: b.text
+          .split("\n")
+          .map(cleanLine)
+          .filter((l) => l.length > 0 && !isJunk(l)),
       }))
       .filter((b) => b.lines.length > 0);
 
@@ -343,7 +416,7 @@ export async function runOcr(
         .map((g, i) => ({
           bbox: { x0: 0, y0: i * 120, x1: 800, y1: (i + 1) * 120 },
           confidence: conf,
-          lines: cleanLines(g.split("\n")),
+          lines: g.split("\n").map(cleanLine).filter((l) => l.length > 0 && !isJunk(l)),
         }))
         .filter((b) => b.lines.length > 0);
     } else {
@@ -351,7 +424,7 @@ export async function runOcr(
         {
           bbox: { x0: 0, y0: 0, x1: 800, y1: 1000 },
           confidence: conf,
-          lines: cleanLines(rawText.split("\n")),
+          lines: rawText.split("\n").map(cleanLine).filter((l) => l.length > 0 && !isJunk(l)),
         },
       ];
     }
@@ -362,22 +435,32 @@ export async function runOcr(
 
   const baseComponent = componentNameOverride?.trim() || detectComponentName(blockData, imageH);
 
+  // Track key uniqueness across the whole result (by section+key)
+  const sectionKeyCounts: Record<string, Record<string, number>> = {};
+
   const rawSections: Array<{ label: string; bbox: BBox; rows: ExtractedRow[] }> = [];
 
   for (const block of blockData) {
     const analysis = analyzeBlock(block.lines, block.bbox, imageH, imageW);
     const componentName = `${baseComponent}_${analysis.label}`;
-    const seen = new Set<string>();
+    const seenText = new Set<string>();
     const rows: ExtractedRow[] = [];
+    sectionKeyCounts[analysis.label] = sectionKeyCounts[analysis.label] || {};
 
     for (const line of block.lines) {
-      if (seen.has(line)) continue;
-      seen.add(line);
+      const norm = line.toLowerCase();
+      if (seenText.has(norm)) continue;
+      seenText.add(norm);
 
       const type = classifyLine(line);
-      const key = toCamelCase(line.slice(0, 50)) || "unknown";
+      const baseKey = semanticKey(line, type, analysis.hint) || "field";
 
-      const lineWords = line.toLowerCase().split(/\s+/);
+      // Make key unique per section
+      const counts = sectionKeyCounts[analysis.label];
+      counts[baseKey] = (counts[baseKey] || 0) + 1;
+      const key = counts[baseKey] > 1 ? `${baseKey}${counts[baseKey]}` : baseKey;
+
+      const lineWords = norm.split(/\s+/);
       const matched = ocrWords
         .filter((w) => w?.text && lineWords.includes(w.text.toLowerCase()))
         .map((w) => w.confidence);
@@ -395,9 +478,7 @@ export async function runOcr(
       });
     }
 
-    if (rows.length > 0) {
-      rawSections.push({ label: analysis.label, bbox: block.bbox, rows });
-    }
+    if (rows.length > 0) rawSections.push({ label: analysis.label, bbox: block.bbox, rows });
   }
 
   deduplicateLabels(rawSections);
