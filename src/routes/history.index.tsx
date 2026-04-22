@@ -6,7 +6,7 @@ import { getConfidenceBg, type OcrResult } from "@/lib/types";
 import { getHistory, deleteFromHistory, clearHistory } from "@/lib/historyService";
 import { generateExcelBuffer } from "@/lib/excelService";
 
-export const Route = createFileRoute("/history")({
+export const Route = createFileRoute("/history/")({
   head: () => ({
     meta: [
       { title: "History — OCR Extractor" },
