@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "deploy": "gh-pages -d dist/client"
+"deploy": "gh-pages -d dist"
   },
   "dependencies": {
     "@cloudflare/vite-plugin": "^1.25.5",
