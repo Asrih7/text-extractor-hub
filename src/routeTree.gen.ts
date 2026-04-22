@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as UploadRouteImport } from './routes/upload'
 import { Route as HistoryRouteImport } from './routes/history'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as HistoryIndexRouteImport } from './routes/history.index'
 import { Route as HistoryIdRouteImport } from './routes/history.$id'
 
 const UploadRoute = UploadRouteImport.update({
@@ -29,6 +30,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const HistoryIndexRoute = HistoryIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => HistoryRoute,
+} as any)
 const HistoryIdRoute = HistoryIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -40,12 +46,13 @@ export interface FileRoutesByFullPath {
   '/history': typeof HistoryRouteWithChildren
   '/upload': typeof UploadRoute
   '/history/$id': typeof HistoryIdRoute
+  '/history/': typeof HistoryIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/history': typeof HistoryRouteWithChildren
   '/upload': typeof UploadRoute
   '/history/$id': typeof HistoryIdRoute
+  '/history': typeof HistoryIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -53,13 +60,14 @@ export interface FileRoutesById {
   '/history': typeof HistoryRouteWithChildren
   '/upload': typeof UploadRoute
   '/history/$id': typeof HistoryIdRoute
+  '/history/': typeof HistoryIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/history' | '/upload' | '/history/$id'
+  fullPaths: '/' | '/history' | '/upload' | '/history/$id' | '/history/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/history' | '/upload' | '/history/$id'
-  id: '__root__' | '/' | '/history' | '/upload' | '/history/$id'
+  to: '/' | '/upload' | '/history/$id' | '/history'
+  id: '__root__' | '/' | '/history' | '/upload' | '/history/$id' | '/history/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -91,6 +99,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/history/': {
+      id: '/history/'
+      path: '/'
+      fullPath: '/history/'
+      preLoaderRoute: typeof HistoryIndexRouteImport
+      parentRoute: typeof HistoryRoute
+    }
     '/history/$id': {
       id: '/history/$id'
       path: '/$id'
@@ -103,10 +118,12 @@ declare module '@tanstack/react-router' {
 
 interface HistoryRouteChildren {
   HistoryIdRoute: typeof HistoryIdRoute
+  HistoryIndexRoute: typeof HistoryIndexRoute
 }
 
 const HistoryRouteChildren: HistoryRouteChildren = {
   HistoryIdRoute: HistoryIdRoute,
+  HistoryIndexRoute: HistoryIndexRoute,
 }
 
 const HistoryRouteWithChildren =
@@ -120,3 +137,12 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { createStart } from '@tanstack/react-start'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+  }
+}
